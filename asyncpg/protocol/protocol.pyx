@@ -96,6 +96,8 @@ cdef class BaseProtocol(CoreProtocol):
         self.is_reading = True
         self.writing_allowed = asyncio.Event()
         self.writing_allowed.set()
+        self.ready_for_copy_out = asyncio.Event()
+        self.ready_for_copy_out.set()
 
         self.timeout_handle = None
         self.timeout_callback = self._on_timeout
@@ -352,6 +354,7 @@ cdef class BaseProtocol(CoreProtocol):
         # on the top level.
         waiter = self._new_waiter(timer.get_remaining_budget())
 
+        self.ready_for_copy_out.set()
         self._copy_out(copy_stmt)
 
         try:
@@ -383,9 +386,11 @@ cdef class BaseProtocol(CoreProtocol):
                     break
 
                 waiter = self._new_waiter(timer.get_remaining_budget())
+                self.ready_for_copy_out.set()
 
         finally:
             self.resume_reading()
+            self.ready_for_copy_out.clear()
 
         return status_msg
 
@@ -912,6 +917,11 @@ cdef class BaseProtocol(CoreProtocol):
 
     def data_received(self, data):
         self.buffer.feed_data(data)
+        asyncio.create_task(self._guarded_read_server_messages())
+
+    async def _guarded_read_server_messages(self):
+        if self.state in (PROTOCOL_COPY_OUT, PROTOCOL_COPY_OUT_DATA):
+            await self.ready_for_copy_out.wait()
         self._read_server_messages()
 
     def connection_made(self, transport):
